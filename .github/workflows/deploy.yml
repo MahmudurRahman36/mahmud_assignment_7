@@ -1,0 +1,249 @@
+name: Deploy to AWS 3-Tier Architecture
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+env:
+  DEPLOY_PATH: /home/ubuntu/bmi-health-tracker
+  FRONTEND_DEPLOY_PATH: /var/www/html
+  DB_NAME: bmidb
+  DB_USER: bmi_user
+  NODE_VERSION: '18.x'
+
+jobs:
+  deploy:
+    name: Build & Deploy via Bastion Host
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Setup SSH Agent
+      uses: webfactory/ssh-agent@v0.9.0
+      with:
+        ssh-private-key: ${{ secrets.EC2_SSH_KEY }}
+
+    - name: Configure SSH to skip host key checking
+      run: |
+        mkdir -p ~/.ssh
+        cat >> ~/.ssh/config <<EOF
+        Host *
+          StrictHostKeyChecking no
+          UserKnownHostsFile /dev/null
+        EOF
+        chmod 600 ~/.ssh/config
+
+    - name: Verify SSH Connectivity to Bastion Host
+      run: |
+        echo "Testing SSH connection to Bastion Host..."
+        ssh ubuntu@${{ secrets.EC2_BASTION_HOST }} "echo 'Connected successfully to Bastion Host!'"
+
+    - name: Deploy Backend (Private Subnet)
+      run: |
+        echo "=========================================="
+        echo "Deploying Backend EC2 via Bastion Host"
+        echo "=========================================="
+        
+        ssh -J ubuntu@${{ secrets.EC2_BASTION_HOST }} ubuntu@${{ secrets.EC2_BACKEND_HOST }} << 'ENDSSH'
+          set -e
+          
+          # Load Node Version Manager (NVM) or export Node path
+          export NVM_DIR="$HOME/.nvm"
+          [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh" || true
+          
+          # Fresh checkout or git pull
+          if [ ! -d "${{ env.DEPLOY_PATH }}" ]; then
+            echo "Cloning repository..."
+            git clone https://github.com/${{ github.repository }}.git ${{ env.DEPLOY_PATH }}
+          else
+            echo "Updating remote origin to user repository..."
+            cd ${{ env.DEPLOY_PATH }}
+            git remote set-url origin https://github.com/${{ github.repository }}.git || true
+            echo "Updating repository..."
+            git fetch origin
+            git reset --hard origin/main
+          fi
+          
+          # Force ownership to ubuntu user to prevent EACCES permission errors
+          sudo chown -R ubuntu:ubuntu ${{ env.DEPLOY_PATH }}
+          
+          cd ${{ env.DEPLOY_PATH }}/src/backend
+          
+          # Install Node packages
+          echo "Installing dependencies..."
+          npm install --production
+          
+          # Re-write .env with target database connection
+          echo "Creating environment file..."
+          cat > .env <<EOF
+          NODE_ENV=production
+          PORT=3000
+          DATABASE_URL=postgresql://${{ env.DB_USER }}:${{ secrets.DB_PASSWORD }}@${{ secrets.DB_PRIVATE_IP }}:5432/${{ env.DB_NAME }}
+          FRONTEND_URL=http://${{ secrets.ALB_DNS_NAME }}
+          EOF
+          chmod 600 .env
+          
+          # Run database migrations
+          echo "Running migrations..."
+          if [ -d "migrations" ]; then
+            for sql_file in migrations/*.sql; do
+              if [ -f "$sql_file" ]; then
+                echo "Applying: $(basename $sql_file)"
+                PGPASSWORD='${{ secrets.DB_PASSWORD }}' psql -h ${{ secrets.DB_PRIVATE_IP }} -U ${{ env.DB_USER }} -d ${{ env.DB_NAME }} -f "$sql_file"
+              fi
+            done
+          fi
+          
+          # Process Control via PM2
+          echo "Restarting application with PM2..."
+          if pm2 describe bmi-backend > /dev/null 2>&1; then
+            pm2 restart bmi-backend --update-env
+          else
+            pm2 start src/server.js --name bmi-backend
+            pm2 save
+          fi
+          
+          echo "Backend deployment completed!"
+        ENDSSH
+
+    - name: Deploy Frontend (Private Subnet)
+      run: |
+        echo "=========================================="
+        echo "Deploying Frontend EC2 via Bastion Host"
+        echo "=========================================="
+        
+        ssh -J ubuntu@${{ secrets.EC2_BASTION_HOST }} ubuntu@${{ secrets.EC2_FRONTEND_HOST }} << 'ENDSSH'
+          set -e
+          
+          # Fresh checkout or git pull
+          if [ ! -d "${{ env.DEPLOY_PATH }}" ]; then
+            echo "Cloning repository..."
+            git clone https://github.com/${{ github.repository }}.git ${{ env.DEPLOY_PATH }}
+          else
+            echo "Updating remote origin to user repository..."
+            cd ${{ env.DEPLOY_PATH }}
+            git remote set-url origin https://github.com/${{ github.repository }}.git || true
+            echo "Updating repository..."
+            git fetch origin
+            git reset --hard origin/main
+          fi
+          
+          # Force ownership to ubuntu user to prevent EACCES permission errors
+          sudo chown -R ubuntu:ubuntu ${{ env.DEPLOY_PATH }}
+          
+          cd ${{ env.DEPLOY_PATH }}/src/frontend
+          
+          # Install dependencies and build React app
+          echo "Installing dependencies..."
+          npm install
+          
+          echo "Building production bundles..."
+          npm run build
+          
+          # Deploy files to Nginx web root
+          echo "Copying distribution bundles to Nginx root..."
+          sudo rm -rf ${{ env.FRONTEND_DEPLOY_PATH }}/*
+          sudo cp -r dist/* ${{ env.FRONTEND_DEPLOY_PATH }}/
+          sudo chown -R www-data:www-data ${{ env.FRONTEND_DEPLOY_PATH }}
+          
+          # Restart Nginx
+          echo "Reloading Nginx web server..."
+          sudo systemctl reload nginx
+          
+          echo "Frontend deployment completed!"
+        ENDSSH
+
+    - name: Automatically Deploy Grafana & Prometheus Stack (Bastion Host)
+      run: |
+        echo "=========================================="
+        echo "Deploying Telemetry Stack on Bastion Host"
+        echo "=========================================="
+        ssh ubuntu@${{ secrets.EC2_BASTION_HOST }} \
+          SMTP_SMARTHOST="${{ secrets.SMTP_SMARTHOST }}" \
+          SMTP_FROM="${{ secrets.SMTP_FROM }}" \
+          SMTP_AUTH_USERNAME="${{ secrets.SMTP_AUTH_USERNAME }}" \
+          SMTP_AUTH_PASSWORD="${{ secrets.SMTP_AUTH_PASSWORD }}" \
+          ALERT_EMAIL_TO="${{ secrets.ALERT_EMAIL_TO }}" \
+          bash -s << 'ENDSSH'
+          set -e
+          
+          # Fresh clone or update
+          if [ ! -d "/home/ubuntu/bmi-health-tracker" ]; then
+            echo "Cloning repository..."
+            git clone https://github.com/${{ github.repository }}.git /home/ubuntu/bmi-health-tracker
+          else
+            echo "Updating remote origin to user repository..."
+            cd /home/ubuntu/bmi-health-tracker
+            git remote set-url origin https://github.com/${{ github.repository }}.git || true
+            echo "Updating repository..."
+            git fetch origin
+            git reset --hard origin/main
+          fi
+          
+          cd /home/ubuntu/bmi-health-tracker
+          sudo chmod +x monitoring/3-tier-app/scripts/setup-monitoring-server.sh
+          
+          # Pass the backend host IP non-interactively to the script
+          export SMTP_SMARTHOST
+          export SMTP_FROM
+          export SMTP_AUTH_USERNAME
+          export SMTP_AUTH_PASSWORD
+          export ALERT_EMAIL_TO
+          echo "${{ secrets.EC2_BACKEND_HOST }}" | sudo -E ./monitoring/3-tier-app/scripts/setup-monitoring-server.sh
+          
+          echo "Monitoring stack setup complete!"
+        ENDSSH
+
+    - name: Automatically Setup Exporters (Backend Private Node)
+      run: |
+        echo "=========================================="
+        echo "Deploying Exporters on Private Backend Node"
+        echo "=========================================="
+        ssh -J ubuntu@${{ secrets.EC2_BASTION_HOST }} ubuntu@${{ secrets.EC2_BACKEND_HOST }} << 'ENDSSH'
+          set -e
+          
+          # Force sync latest files
+          cd /home/ubuntu/bmi-health-tracker
+          sudo chmod +x monitoring/3-tier-app/scripts/setup-application-server.sh
+          
+          # Pass the Bastion private IP (which we fetch dynamically) to the exporter installer
+          BASTION_PRIVATE_IP=$(host -t A ${{ secrets.EC2_BASTION_HOST }} 2>/dev/null | awk '{print $4}' || echo "10.0.1.10")
+          # Under custom VPC networking, Bastion private IP resides in 10.0.1.x subnet, let's fetch it from system configuration or default
+          # Actually, the Bastion host private IP is usually the default gateway or 10.0.1.10
+          # We can pass a generic CIDR block or Bastion private IP: 10.0.1.0/24 range.
+          # The exporter setup script prompts: "Monitoring Server IP: "
+          # We pass "10.0.1.0/24" or a generic private address. Let's send the VPC CIDR 10.0.0.0/16 so it accepts any VPC monitoring connections!
+          echo "10.0.0.0/16" | sudo ./monitoring/3-tier-app/scripts/setup-application-server.sh
+          
+          echo "Exporters setup complete!"
+        ENDSSH
+
+    - name: Health Check (Verify via Load Balancer)
+      run: |
+        echo "=========================================="
+        echo "Performing App Verification via ALB"
+        echo "=========================================="
+        sleep 5
+        
+        HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" --max-time 15 "http://${{ secrets.ALB_DNS_NAME }}/health" || echo "000")
+        echo "ALB Health Endpoint Status: $HTTP_STATUS"
+        if [ "$HTTP_STATUS" = "200" ]; then
+          echo "SUCCESS: 3-Tier Application is online and routing properly!"
+        else
+          echo "FAILURE: Application returned status $HTTP_STATUS. Please verify target groups and security groups."
+          exit 1
+        fi
+
+    - name: Print Debug Logs on Failure
+      if: failure()
+      run: |
+        echo "=========================================="
+        echo "DEPLOYMENT FAILED: Fetching Remote Logs..."
+        echo "=========================================="
+        echo "--- Backend PM2 Status & Logs ---"
+        ssh -J ubuntu@${{ secrets.EC2_BASTION_HOST }} ubuntu@${{ secrets.EC2_BACKEND_HOST }} "export PM2_HOME=/home/ubuntu/.pm2; pm2 status; pm2 logs bmi-backend --lines 100 --nostream" || true
+        echo "--- Frontend Nginx Status & Logs ---"
+        ssh -J ubuntu@${{ secrets.EC2_BASTION_HOST }} ubuntu@${{ secrets.EC2_FRONTEND_HOST }} "sudo systemctl status nginx; sudo tail -n 50 /var/log/nginx/error.log" || true

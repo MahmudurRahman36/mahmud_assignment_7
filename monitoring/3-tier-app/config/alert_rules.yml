@@ -1,0 +1,247 @@
+groups:
+  # ============================================================
+  # SYSTEM ALERTS
+  # ============================================================
+  - name: system_alerts
+    interval: 30s
+    rules:
+      - alert: HighCPUUsage
+        expr: 100 - (avg by(instance) (irate(node_cpu_seconds_total{mode="idle",job="node_exporter"}[5m])) * 100) > 80
+        for: 5m
+        labels:
+          severity: warning
+          tier: infrastructure
+        annotations:
+          summary: "High CPU usage detected on {{ $labels.instance }}"
+          description: "CPU usage is above 80% (current: {{ $value | humanize }}%) for more than 5 minutes"
+
+      - alert: CriticalCPUUsage
+        expr: 100 - (avg by(instance) (irate(node_cpu_seconds_total{mode="idle",job="node_exporter"}[5m])) * 100) > 95
+        for: 2m
+        labels:
+          severity: critical
+          tier: infrastructure
+        annotations:
+          summary: "Critical CPU usage on {{ $labels.instance }}"
+          description: "CPU usage is above 95% (current: {{ $value | humanize }}%)"
+
+      - alert: HighMemoryUsage
+        expr: (node_memory_MemTotal_bytes - node_memory_MemAvailable_bytes) / node_memory_MemTotal_bytes * 100 > 85
+        for: 5m
+        labels:
+          severity: warning
+          tier: infrastructure
+        annotations:
+          summary: "High memory usage on {{ $labels.instance }}"
+          description: "Memory usage is above 85% (current: {{ $value | humanize }}%)"
+
+      - alert: CriticalMemoryUsage
+        expr: (node_memory_MemTotal_bytes - node_memory_MemAvailable_bytes) / node_memory_MemTotal_bytes * 100 > 95
+        for: 2m
+        labels:
+          severity: critical
+          tier: infrastructure
+        annotations:
+          summary: "Critical memory usage on {{ $labels.instance }}"
+          description: "Memory usage is above 95% (current: {{ $value | humanize }}%)"
+
+      - alert: DiskSpaceLow
+        expr: (node_filesystem_avail_bytes{mountpoint="/"} / node_filesystem_size_bytes{mountpoint="/"}) * 100 < 20
+        for: 5m
+        labels:
+          severity: warning
+          tier: infrastructure
+        annotations:
+          summary: "Low disk space on {{ $labels.instance }}"
+          description: "Disk space is below 20% (current: {{ $value | humanize }}%)"
+
+      - alert: DiskSpaceCritical
+        expr: (node_filesystem_avail_bytes{mountpoint="/"} / node_filesystem_size_bytes{mountpoint="/"}) * 100 < 10
+        for: 2m
+        labels:
+          severity: critical
+          tier: infrastructure
+        annotations:
+          summary: "Critical disk space on {{ $labels.instance }}"
+          description: "Disk space is below 10% (current: {{ $value | humanize }}%)"
+
+  # ============================================================
+  # APPLICATION LAYER ALERTS
+  # ============================================================
+  - name: application_alerts
+    interval: 30s
+    rules:
+      - alert: BackendApplicationDown
+        expr: up{job="bmi-backend"} == 0
+        for: 2m
+        labels:
+          severity: critical
+          tier: application
+        annotations:
+          summary: "BMI Backend Application is down"
+          description: "The BMI application exporter on {{ $labels.instance }} is not responding for more than 2 minutes"
+
+      - alert: BackendApplicationUnhealthy
+        expr: bmi_app_healthy == 0
+        for: 3m
+        labels:
+          severity: critical
+          tier: application
+        annotations:
+          summary: "BMI Backend Application is unhealthy"
+          description: "The BMI application reports unhealthy status"
+
+      - alert: HighMetricsCollectionErrors
+        expr: rate(bmi_metrics_collection_errors_total[5m]) > 0.5
+        for: 5m
+        labels:
+          severity: warning
+          tier: application
+        annotations:
+          summary: "High rate of metrics collection errors"
+          description: "Metrics collection is experiencing errors ({{ $value | humanize }} errors/sec)"
+
+      - alert: NoRecentMeasurements
+        expr: bmi_measurements_created_1h == 0
+        for: 30m
+        labels:
+          severity: warning
+          tier: application
+        annotations:
+          summary: "No measurements created in the last hour"
+          description: "The application hasn't received any new measurements in over 1 hour"
+
+  # ============================================================
+  # DATABASE LAYER ALERTS
+  # ============================================================
+  - name: database_alerts
+    interval: 30s
+    rules:
+      - alert: DatabaseDown
+        expr: up{job="postgresql"} == 0
+        for: 2m
+        labels:
+          severity: critical
+          tier: data
+        annotations:
+          summary: "PostgreSQL database is down"
+          description: "PostgreSQL exporter on {{ $labels.instance }} is not responding"
+
+      - alert: DatabaseConnectionsHigh
+        expr: pg_stat_database_numbackends{datname="bmidb"} > 80
+        for: 5m
+        labels:
+          severity: warning
+          tier: data
+        annotations:
+          summary: "High number of database connections"
+          description: "PostgreSQL has {{ $value }} active connections to bmidb database"
+
+      - alert: DatabaseConnectionsCritical
+        expr: pg_stat_database_numbackends{datname="bmidb"} > 95
+        for: 2m
+        labels:
+          severity: critical
+          tier: data
+        annotations:
+          summary: "Critical number of database connections"
+          description: "PostgreSQL has {{ $value }} active connections - approaching max_connections limit"
+
+      - alert: DatabaseDeadlocks
+        expr: rate(pg_stat_database_deadlocks{datname="bmidb"}[5m]) > 0
+        for: 5m
+        labels:
+          severity: warning
+          tier: data
+        annotations:
+          summary: "Database deadlocks detected"
+          description: "PostgreSQL is experiencing deadlocks ({{ $value | humanize }} deadlocks/sec)"
+
+      - alert: DatabaseHighRollbackRate
+        expr: rate(pg_stat_database_xact_rollback{datname="bmidb"}[5m]) / rate(pg_stat_database_xact_commit{datname="bmidb"}[5m]) > 0.1
+        for: 10m
+        labels:
+          severity: warning
+          tier: data
+        annotations:
+          summary: "High database transaction rollback rate"
+          description: "More than 10% of transactions are being rolled back"
+
+  # ============================================================
+  # FRONTEND LAYER ALERTS
+  # ============================================================
+  - name: frontend_alerts
+    interval: 30s
+    rules:
+      - alert: NginxDown
+        expr: up{job="nginx"} == 0
+        for: 2m
+        labels:
+          severity: critical
+          tier: frontend
+        annotations:
+          summary: "Nginx web server is down"
+          description: "Nginx exporter on {{ $labels.instance }} is not responding"
+
+      - alert: NginxHighConnectionRate
+        expr: rate(nginx_connections_accepted{job="nginx"}[5m]) > 100
+        for: 5m
+        labels:
+          severity: warning
+          tier: frontend
+        annotations:
+          summary: "High Nginx connection rate"
+          description: "Nginx is accepting {{ $value | humanize }} connections/sec"
+
+      - alert: NginxHighActiveConnections
+        expr: nginx_connections_active{job="nginx"} > 200
+        for: 10m
+        labels:
+          severity: warning
+          tier: frontend
+        annotations:
+          summary: "High number of active Nginx connections"
+          description: "Nginx has {{ $value }} active connections"
+
+  # ============================================================
+  # MONITORING INFRASTRUCTURE ALERTS
+  # ============================================================
+  - name: monitoring_alerts
+    interval: 30s
+    rules:
+      - alert: PrometheusTargetDown
+        expr: up == 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Prometheus target {{ $labels.job }} is down"
+          description: "Target {{ $labels.instance }} (job: {{ $labels.job }}) has been down for more than 5 minutes"
+
+      - alert: PrometheusConfigReloadFailed
+        expr: prometheus_config_last_reload_successful == 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Prometheus configuration reload failed"
+          description: "Prometheus failed to reload its configuration"
+
+      - alert: PrometheusTSDBCompactionsFailing
+        expr: rate(prometheus_tsdb_compactions_failed_total[5m]) > 0
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Prometheus TSDB compactions are failing"
+          description: "Prometheus is experiencing TSDB compaction failures"
+
+      - alert: MonitoringServiceDown
+        expr: up{job=~"prometheus|grafana|loki|alertmanager|node_exporter_monitoring"} == 0
+        for: 2m
+        labels:
+          severity: critical
+          tier: monitoring
+        annotations:
+          summary: "Monitoring service {{ $labels.job }} is down"
+          description: "{{ $labels.job }} on {{ $labels.instance }} has been unreachable for 2+ minutes"

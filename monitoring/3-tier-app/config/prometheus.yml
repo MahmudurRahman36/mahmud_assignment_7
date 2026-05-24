@@ -1,0 +1,117 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  external_labels:
+    cluster: 'bmi-health-tracker'
+    environment: 'production'
+
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets:
+          - localhost:9093
+
+rule_files:
+  - "alert_rules.yml"
+
+scrape_configs:
+  # Prometheus itself
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']
+        labels:
+          role: 'monitoring'
+          server: 'monitoring-server'
+
+  # ============================================================
+  # APPLICATION SERVER - THREE-TIER MONITORING
+  # Replace APPLICATION_SERVER_IP with your app server's private IP
+  # ============================================================
+
+  # System Metrics - Node Exporter
+  - job_name: 'node_exporter'
+    static_configs:
+      - targets: ['APPLICATION_SERVER_IP:9100']
+        labels:
+          server: 'bmi-app-server'
+          role: 'system'
+          tier: 'infrastructure'
+          environment: 'production'
+
+  # Database Layer - PostgreSQL Exporter
+  - job_name: 'postgresql'
+    static_configs:
+      - targets: ['APPLICATION_SERVER_IP:9187']
+        labels:
+          server: 'bmi-app-server'
+          database: 'bmidb'
+          role: 'database'
+          tier: 'data'
+          environment: 'production'
+
+  # Frontend Layer - Nginx Exporter
+  - job_name: 'nginx'
+    static_configs:
+      - targets: ['APPLICATION_SERVER_IP:9113']
+        labels:
+          server: 'bmi-app-server'
+          role: 'webserver'
+          tier: 'frontend'
+          environment: 'production'
+
+  # Backend Layer - BMI Custom Application Exporter
+  - job_name: 'bmi-backend'
+    static_configs:
+      - targets: ['APPLICATION_SERVER_IP:9091']
+        labels:
+          server: 'bmi-app-server'
+          application: 'bmi-health-tracker'
+          role: 'backend'
+          tier: 'application'
+          environment: 'production'
+
+  # ============================================================
+  # MONITORING SERVER - SELF MONITORING
+  # ============================================================
+
+  # Node Exporter - Monitoring Server
+  - job_name: 'node_exporter_monitoring'
+    static_configs:
+      - targets: ['localhost:9100']
+        labels:
+          server: 'monitoring-server'
+          role: 'monitoring'
+          environment: 'production'
+
+  # Grafana - Monitoring Server
+  - job_name: 'grafana'
+    static_configs:
+      - targets: ['localhost:3001']
+        labels:
+          server: 'monitoring-server'
+          role: 'visualization'
+          environment: 'production'
+
+  # Loki - Monitoring Server
+  - job_name: 'loki'
+    static_configs:
+      - targets: ['localhost:3100']
+        labels:
+          server: 'monitoring-server'
+          role: 'log-aggregation'
+          environment: 'production'
+
+  # AlertManager - Monitoring Server
+  - job_name: 'alertmanager'
+    static_configs:
+      - targets: ['localhost:9093']
+        labels:
+          server: 'monitoring-server'
+          role: 'alerting'
+          environment: 'production'
+
+# Notes:
+# 1. All exporters are labeled with tier (infrastructure, data, frontend, application)
+# 2. This allows easy filtering in Grafana dashboards
+# 3. Scrape interval is 15 seconds - adjust if needed
+# 4. External labels help identify this cluster in federated setups

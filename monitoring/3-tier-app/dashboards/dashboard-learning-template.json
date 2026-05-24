@@ -1,0 +1,343 @@
+{
+  "id": null,
+  "uid": "dashboard-learning-template",
+  "title": "Dashboard Learning Template",
+  "schemaVersion": 38,
+  "version": 1,
+  "editable": true,
+  "liveNow": false,
+  "graphTooltip": 1,
+  "timezone": "browser",
+  "refresh": "30s",
+  "time": {
+    "from": "now-1h",
+    "to": "now"
+  },
+  "timepicker": {},
+  "tags": ["learning", "template"],
+  "links": [],
+  "annotations": {
+    "list": []
+  },
+  "panels": [
+
+    {
+      "id": 1,
+      "type": "text",
+      "title": "What is This Dashboard?",
+      "gridPos": { "x": 0, "y": 0, "w": 24, "h": 3 },
+      "datasource": null,
+      "options": {
+        "mode": "markdown",
+        "content": "# Grafana Dashboard — Learning Template\n\nThis dashboard demonstrates one panel of each major type:\n\n| Panel | Type | Data Source | What it shows |\n|---|---|---|---|\n| **Server Up/Down** | `stat` | Prometheus | Single current value with colour threshold |\n| **CPU Over Time** | `timeseries` | Prometheus | A metric plotted as a line graph |\n| **App Backend Logs** | `logs` | Loki | Raw log lines streamed from the app server |\n\nSee `dashboard-learning-template.md` in the same folder for a line-by-line explanation of every JSON field."
+      }
+    },
+
+    {
+      "id": 2,
+      "type": "stat",
+      "title": "App Server — Up or Down",
+      "gridPos": { "x": 0, "y": 3, "w": 6, "h": 4 },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "Prometheus"
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "Prometheus" },
+          "expr": "up{job=\"node_exporter\"}",
+          "instant": true,
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "mappings": [
+            {
+              "type": "value",
+              "options": {
+                "0": { "text": "DOWN", "color": "red" },
+                "1": { "text": "UP",   "color": "green" }
+              }
+            }
+          ],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "value": null,  "color": "red"   },
+              { "value": 1,     "color": "green" }
+            ]
+          },
+          "color": { "mode": "thresholds" }
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "orientation": "auto",
+        "textMode": "auto",
+        "reduceOptions": {
+          "calcs": ["lastNotNull"],
+          "fields": "",
+          "values": false
+        }
+      }
+    },
+
+    {
+      "id": 3,
+      "type": "stat",
+      "title": "Current CPU Usage %",
+      "gridPos": { "x": 6, "y": 3, "w": 6, "h": 4 },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "Prometheus"
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "Prometheus" },
+          "expr": "100 - (avg by(instance)(irate(node_cpu_seconds_total{mode=\"idle\",job=\"node_exporter\"}[5m])) * 100)",
+          "instant": true,
+          "legendFormat": "CPU %",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "min": 0,
+          "max": 100,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "value": null, "color": "green"  },
+              { "value": 70,   "color": "yellow" },
+              { "value": 85,   "color": "red"    }
+            ]
+          },
+          "color": { "mode": "thresholds" }
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "textMode": "auto",
+        "reduceOptions": {
+          "calcs": ["lastNotNull"],
+          "fields": "",
+          "values": false
+        }
+      }
+    },
+
+    {
+      "id": 4,
+      "type": "stat",
+      "title": "Backend Log Volume (last 5 min)",
+      "gridPos": { "x": 12, "y": 3, "w": 6, "h": 4 },
+      "datasource": {
+        "type": "loki",
+        "uid": "Loki"
+      },
+      "targets": [
+        {
+          "datasource": { "type": "loki", "uid": "Loki" },
+          "expr": "sum(count_over_time({job=\"bmi-backend\"}[5m]))",
+          "instant": true,
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "value": null, "color": "blue" }
+            ]
+          },
+          "color": { "mode": "fixed", "fixedColor": "blue" }
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "center",
+        "orientation": "auto",
+        "textMode": "auto",
+        "reduceOptions": {
+          "calcs": ["lastNotNull"],
+          "fields": "",
+          "values": false
+        }
+      }
+    },
+
+    {
+      "id": 5,
+      "type": "timeseries",
+      "title": "CPU Usage Over Time — Line Graph",
+      "gridPos": { "x": 0, "y": 7, "w": 24, "h": 8 },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "Prometheus"
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "Prometheus" },
+          "expr": "100 - (avg by(instance)(irate(node_cpu_seconds_total{mode=\"idle\",job=\"node_exporter\"}[5m])) * 100)",
+          "legendFormat": "CPU usage %",
+          "refId": "A"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "Prometheus" },
+          "expr": "avg by(instance)(irate(node_cpu_seconds_total{mode=\"iowait\",job=\"node_exporter\"}[5m])) * 100",
+          "legendFormat": "IO wait %",
+          "refId": "B"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "min": 0,
+          "max": 100,
+          "color": { "mode": "palette-classic" },
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 15,
+            "gradientMode": "none",
+            "showPoints": "never",
+            "spanNulls": false,
+            "pointSize": 5,
+            "lineInterpolation": "linear",
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "hideFrom": { "legend": false, "tooltip": false, "viz": false },
+            "scaleDistribution": { "type": "linear" },
+            "thresholdsStyle": { "mode": "off" }
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "value": null, "color": "green" }
+            ]
+          },
+          "mappings": []
+        },
+        "overrides": []
+      },
+      "options": {
+        "tooltip": { "mode": "multi", "sort": "none" },
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true,
+          "calcs": ["lastNotNull", "max", "mean"]
+        }
+      }
+    },
+
+    {
+      "id": 6,
+      "type": "timeseries",
+      "title": "Log Volume Over Time — Bar Graph",
+      "gridPos": { "x": 0, "y": 15, "w": 24, "h": 6 },
+      "datasource": {
+        "type": "loki",
+        "uid": "Loki"
+      },
+      "targets": [
+        {
+          "datasource": { "type": "loki", "uid": "Loki" },
+          "expr": "sum by(job) (count_over_time({job=\"bmi-backend\"}[1m]))",
+          "legendFormat": "{{job}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": { "mode": "palette-classic" },
+          "custom": {
+            "drawStyle": "bars",
+            "lineWidth": 1,
+            "fillOpacity": 100,
+            "gradientMode": "none",
+            "showPoints": "never",
+            "spanNulls": false,
+            "pointSize": 5,
+            "lineInterpolation": "linear",
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "log lines / min",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "hideFrom": { "legend": false, "tooltip": false, "viz": false },
+            "scaleDistribution": { "type": "linear" },
+            "stacking": { "group": "A", "mode": "normal" },
+            "thresholdsStyle": { "mode": "off" }
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [{ "value": null, "color": "green" }]
+          },
+          "mappings": []
+        },
+        "overrides": []
+      },
+      "options": {
+        "tooltip": { "mode": "multi", "sort": "none" },
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true,
+          "calcs": []
+        }
+      }
+    },
+
+    {
+      "id": 7,
+      "type": "logs",
+      "title": "BMI Backend — Raw Log Lines",
+      "gridPos": { "x": 0, "y": 21, "w": 24, "h": 12 },
+      "datasource": {
+        "type": "loki",
+        "uid": "Loki"
+      },
+      "targets": [
+        {
+          "datasource": { "type": "loki", "uid": "Loki" },
+          "expr": "{job=\"bmi-backend\"}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      },
+      "options": {
+        "showTime": true,
+        "showLabels": false,
+        "showCommonLabels": false,
+        "wrapLogMessage": false,
+        "prettifyLogMessage": false,
+        "enableLogDetails": true,
+        "sortOrder": "Descending",
+        "dedupStrategy": "none"
+      }
+    }
+
+  ]
+}

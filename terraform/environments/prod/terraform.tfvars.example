@@ -1,0 +1,5 @@
+aws_region       = "ap-south-1"
+project_name     = "mahmud-health"
+environment      = "prod"
+key_name         = "ostad_batch_11_mahmud"
+allowed_ssh_cidr = "0.0.0.0/0"

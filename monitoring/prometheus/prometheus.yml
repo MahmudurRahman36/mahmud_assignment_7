@@ -1,0 +1,83 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  external_labels:
+    cluster: 'bmi-health-tracker'
+    environment: 'production'
+
+# AlertManager configuration
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets:
+          - localhost:9093
+
+# Load alerting rules
+rule_files:
+  - "alert_rules.yml"
+
+# Scrape configurations
+scrape_configs:
+  # Prometheus itself
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']
+        labels:
+          role: 'monitoring'
+
+  # Node Exporter (System Metrics) - Multi-Node Infrastructure Scrape
+  - job_name: 'node_exporter'
+    static_configs:
+      - targets: ['10.0.4.241:9100']
+        labels:
+          server: 'mahmud-health-prod-frontend'
+          role: 'frontend'
+          environment: 'production'
+      - targets: ['10.0.3.14:9100']
+        labels:
+          server: 'mahmud-health-prod-backend'
+          role: 'backend'
+          environment: 'production'
+      - targets: ['10.0.3.116:9100']
+        labels:
+          server: 'mahmud-health-prod-db'
+          role: 'database'
+          environment: 'production'
+
+  # PostgreSQL Exporter (DB Metrics) - Running on Backend Node scraping DB
+  - job_name: 'postgresql'
+    static_configs:
+      - targets: ['10.0.3.14:9187']
+        labels:
+          server: 'mahmud-health-prod-db'
+          database: 'bmidb'
+          role: 'database'
+
+  # Nginx Exporter (Web Server Metrics) - Running on Frontend Node
+  - job_name: 'nginx'
+    static_configs:
+      - targets: ['10.0.4.241:9113']
+        labels:
+          server: 'mahmud-health-prod-frontend'
+          role: 'webserver'
+
+  # Custom Application Metrics - Running on Backend Node
+  - job_name: 'bmi-backend'
+    static_configs:
+      - targets: ['10.0.3.14:9091']
+        labels:
+          server: 'mahmud-health-prod-backend'
+          application: 'bmi-health-tracker'
+          role: 'backend'
+
+  # Node Exporter - Monitoring Server (self-monitoring)
+  - job_name: 'node_exporter_monitoring'
+    static_configs:
+      - targets: ['localhost:9100']
+        labels:
+          server: 'monitoring-server'
+          role: 'monitoring'
+          environment: 'production'
+
+
+# Note: Replace APPLICATION_SERVER_IP with your application server's private IP address

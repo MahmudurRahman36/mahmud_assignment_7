@@ -1,0 +1,299 @@
+groups:
+  # Infrastructure Alerts
+  - name: infrastructure_alerts
+    interval: 30s
+    rules:
+      # Instance completely down
+      - alert: InstanceDown
+        expr: up == 0
+        for: 1m
+        labels:
+          severity: critical
+          category: infrastructure
+        annotations:
+          summary: "Instance {{ $labels.instance }} is down"
+          description: "{{ $labels.instance }} of job {{ $labels.job }} has been down for more than 1 minute."
+          runbook: "Check server status, network connectivity, and restart services if needed."
+
+      # High CPU usage
+      - alert: HighCPUUsage
+        expr: 100 - (avg by(instance) (rate(node_cpu_seconds_total{mode="idle"}[5m])) * 100) > 90
+        for: 5m
+        labels:
+          severity: warning
+          category: infrastructure
+        annotations:
+          summary: "High CPU usage on {{ $labels.instance }}"
+          description: "CPU usage is {{ $value | humanize }}% for more than 5 minutes."
+          runbook: "Check top processes with `top` or `htop`. Consider scaling up if sustained."
+
+      # Critical CPU usage
+      - alert: CriticalCPUUsage
+        expr: 100 - (avg by(instance) (rate(node_cpu_seconds_total{mode="idle"}[5m])) * 100) > 95
+        for: 2m
+        labels:
+          severity: critical
+          category: infrastructure
+        annotations:
+          summary: "Critical CPU usage on {{ $labels.instance }}"
+          description: "CPU usage is {{ $value | humanize }}% - immediate action required!"
+          runbook: "Identify and kill resource-intensive processes or scale up immediately."
+
+      # High memory usage
+      - alert: HighMemoryUsage
+        expr: (1 - (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes)) * 100 > 85
+        for: 5m
+        labels:
+          severity: warning
+          category: infrastructure
+        annotations:
+          summary: "High memory usage on {{ $labels.instance }}"
+          description: "Memory usage is {{ $value | humanize }}% for more than 5 minutes."
+          runbook: "Check memory-intensive processes. Look for memory leaks."
+
+      # Critical memory usage
+      - alert: CriticalMemoryUsage
+        expr: (1 - (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes)) * 100 > 95
+        for: 1m
+        labels:
+          severity: critical
+          category: infrastructure
+        annotations:
+          summary: "Critical memory usage on {{ $labels.instance }}"
+          description: "Memory usage is {{ $value | humanize }}% - system may become unresponsive!"
+          runbook: "Restart memory-intensive services or scale up immediately."
+
+      # Disk space warning
+      - alert: DiskSpaceWarning
+        expr: (node_filesystem_avail_bytes{mountpoint="/",fstype!="tmpfs"} / node_filesystem_size_bytes{mountpoint="/"}) * 100 < 20
+        for: 5m
+        labels:
+          severity: warning
+          category: infrastructure
+        annotations:
+          summary: "Low disk space on {{ $labels.instance }}"
+          description: "Only {{ $value | humanize }}% disk space remaining on {{ $labels.mountpoint }}."
+          runbook: "Clean up old logs, temporary files, or expand disk volume."
+
+      # Disk space critical
+      - alert: DiskSpaceCritical
+        expr: (node_filesystem_avail_bytes{mountpoint="/",fstype!="tmpfs"} / node_filesystem_size_bytes{mountpoint="/"}) * 100 < 10
+        for: 1m
+        labels:
+          severity: critical
+          category: infrastructure
+        annotations:
+          summary: "Critical disk space on {{ $labels.instance }}"
+          description: "Only {{ $value | humanize }}% disk space remaining - immediate action required!"
+          runbook: "Delete large files immediately or expand disk. Check du -sh /* to find largest directories."
+
+      # High disk I/O
+      - alert: HighDiskIO
+        expr: rate(node_disk_io_time_seconds_total[5m]) > 0.8
+        for: 5m
+        labels:
+          severity: warning
+          category: infrastructure
+        annotations:
+          summary: "High disk I/O on {{ $labels.instance }}"
+          description: "Disk I/O is high on {{ $labels.device }}."
+          runbook: "Check iotop for processes causing high I/O. Consider using faster storage."
+
+      # High network traffic
+      - alert: HighNetworkTraffic
+        expr: rate(node_network_receive_bytes_total[5m]) > 100000000  # 100MB/s
+        for: 5m
+        labels:
+          severity: warning
+          category: infrastructure
+        annotations:
+          summary: "High network traffic on {{ $labels.instance }}"
+          description: "Network receive traffic is {{ $value | humanize }}B/s on {{ $labels.device }}."
+          runbook: "Check for unusual traffic patterns or potential DDoS."
+
+  # Application Alerts
+  - name: application_alerts
+    interval: 30s
+    rules:
+      # Backend application down
+      - alert: BackendDown
+        expr: up{job="bmi-backend"} == 0
+        for: 1m
+        labels:
+          severity: critical
+          category: application
+        annotations:
+          summary: "Backend application is down"
+          description: "BMI backend API is not responding."
+          runbook: "Check PM2 status with `pm2 status`. Check logs with `pm2 logs bmi-backend`."
+
+      # High API error rate
+      - alert: HighAPIErrorRate
+        expr: (rate(http_requests_total{status=~"5.."}[5m]) / rate(http_requests_total[5m])) * 100 > 5
+        for: 5m
+        labels:
+          severity: critical
+          category: application
+        annotations:
+          summary: "High API error rate"
+          description: "{{ $value | humanize }}% of API requests are returning 5xx errors."
+          runbook: "Check application logs. Review recent deployments. Check database connectivity."
+
+      # Slow API responses
+      - alert: SlowAPIResponses
+        expr: histogram_quantile(0.95, rate(http_request_duration_seconds_bucket[5m])) > 2
+        for: 5m
+        labels:
+          severity: warning
+          category: application
+        annotations:
+          summary: "API responses are slow"
+          description: "95th percentile response time is {{ $value | humanize }}s."
+          runbook: "Check database query performance. Review slow query logs. Consider optimization."
+
+      # No measurements created recently
+      - alert: NoRecentMeasurements
+        expr: increase(bmi_measurements_created_24h[6h]) == 0
+        for: 6h
+        labels:
+          severity: warning
+          category: application
+        annotations:
+          summary: "No measurements created recently"
+          description: "No new measurements have been created in the last 6 hours."
+          runbook: "Check if this is expected (e.g., overnight). Verify application functionality."
+
+  # Database Alerts
+  - name: database_alerts
+    interval: 30s
+    rules:
+      # Database down
+      - alert: PostgreSQLDown
+        expr: pg_up == 0
+        for: 1m
+        labels:
+          severity: critical
+          category: database
+        annotations:
+          summary: "PostgreSQL database is down"
+          description: "Cannot connect to PostgreSQL database."
+          runbook: "Check PostgreSQL status: `sudo systemctl status postgresql`. Check logs: `sudo journalctl -u postgresql`."
+
+      # Too many database connections
+      - alert: TooManyDatabaseConnections
+        expr: (pg_stat_database_numbackends / pg_settings_max_connections) * 100 > 80
+        for: 5m
+        labels:
+          severity: warning
+          category: database
+        annotations:
+          summary: "High database connection usage"
+          description: "{{ $value | humanize }}% of max database connections in use."
+          runbook: "Check for connection leaks. Review connection pooling settings. Consider increasing max_connections."
+
+      # Low database cache hit ratio
+      - alert: LowDatabaseCacheHitRatio
+        expr: (rate(pg_stat_database_blks_hit{datname="bmidb"}[5m]) / (rate(pg_stat_database_blks_hit{datname="bmidb"}[5m]) + rate(pg_stat_database_blks_read{datname="bmidb"}[5m]))) * 100 < 90
+        for: 10m
+        labels:
+          severity: warning
+          category: database
+        annotations:
+          summary: "Low database cache hit ratio"
+          description: "Cache hit ratio is {{ $value | humanize }}% (should be >90%)."
+          runbook: "Consider increasing shared_buffers. Review query patterns for optimization."
+
+      # Database growing rapidly
+      - alert: DatabaseGrowingRapidly
+        expr: rate(bmi_database_size_bytes[1h]) > 10000000  # 10MB per hour
+        for: 2h
+        labels:
+          severity: warning
+          category: database
+        annotations:
+          summary: "Database size growing rapidly"
+          description: "Database is growing at {{ $value | humanize }}B/hour."
+          runbook: "Investigate unusual data growth. Consider implementing data retention policies."
+
+      # Deadlocks detected
+      - alert: DatabaseDeadlocks
+        expr: rate(pg_stat_database_deadlocks{datname="bmidb"}[5m]) > 0
+        for: 1m
+        labels:
+          severity: warning
+          category: database
+        annotations:
+          summary: "Database deadlocks detected"
+          description: "{{ $value | humanize }} deadlocks per second detected."
+          runbook: "Review application logic for transaction conflicts. Check deadlock logs."
+
+  # Web Server Alerts
+  - name: webserver_alerts
+    interval: 30s
+    rules:
+      # Nginx down
+      - alert: NginxDown
+        expr: up{job="nginx"} == 0
+        for: 1m
+        labels:
+          severity: critical
+          category: webserver
+        annotations:
+          summary: "Nginx web server is down"
+          description: "Nginx is not responding."
+          runbook: "Check Nginx status: `sudo systemctl status nginx`. Check logs: `sudo tail -f /var/log/nginx/error.log`."
+
+      # High 4xx error rate
+      - alert: HighClient4xxErrorRate
+        expr: (rate(nginx_http_requests_total{status=~"4.."}[5m]) / rate(nginx_http_requests_total[5m])) * 100 > 10
+        for: 5m
+        labels:
+          severity: warning
+          category: webserver
+        annotations:
+          summary: "High rate of 4xx errors"
+          description: "{{ $value | humanize }}% of requests returning 4xx errors."
+          runbook: "Check for broken links or client errors. Review nginx access logs."
+
+      # High 5xx error rate
+      - alert: HighServer5xxErrorRate
+        expr: (rate(nginx_http_requests_total{status=~"5.."}[5m]) / rate(nginx_http_requests_total[5m])) * 100 > 5
+        for: 5m
+        labels:
+          severity: critical
+          category: webserver
+        annotations:
+          summary: "High rate of 5xx errors"
+          description: "{{ $value | humanize }}% of requests returning 5xx errors."
+          runbook: "Check backend application health. Review nginx error logs and backend logs."
+
+  # Monitoring System Alerts
+  - name: monitoring_alerts
+    interval: 60s
+    rules:
+      # Prometheus scrape failures
+      - alert: PrometheusScrapeFailing
+        expr: up == 0
+        for: 5m
+        labels:
+          severity: warning
+          category: monitoring
+        annotations:
+          summary: "Prometheus cannot scrape {{ $labels.job }}"
+          description: "Prometheus has not been able to scrape {{ $labels.instance }} for 5 minutes."
+          runbook: "Check if exporter is running. Verify network connectivity. Check security groups."
+
+      # Prometheus storage running out
+      - alert: PrometheusStorageLow
+        expr: (prometheus_tsdb_storage_blocks_bytes / prometheus_tsdb_retention_limit_bytes) * 100 > 80
+        for: 10m
+        labels:
+          severity: warning
+          category: monitoring
+        annotations:
+          summary: "Prometheus storage usage high"
+          description: "Prometheus storage is {{ $value | humanize }}% full."
+          runbook: "Consider reducing retention period or expanding storage."
+
+# Note: Some metrics like http_requests_total require custom exporter implementation
+# These are examples and may need adjustment based on your actual metric names

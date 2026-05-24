@@ -1,0 +1,98 @@
+server:
+  http_listen_port: 9081   # different from app-server promtail (9080)
+  grpc_listen_port: 0
+  log_level: info
+
+positions:
+  filename: /var/lib/promtail/positions-monitoring.yaml
+
+clients:
+  - url: http://localhost:3100/loki/api/v1/push
+
+scrape_configs:
+
+  # ============================================================
+  # Prometheus service logs (systemd journal)
+  # ============================================================
+  - job_name: prometheus
+    journal:
+      max_age: 12h
+      labels:
+        job: prometheus
+        server: monitoring-server
+        environment: production
+      matches: _SYSTEMD_UNIT=prometheus.service
+    relabel_configs:
+      - source_labels: ['__journal_priority_keyword']
+        target_label: 'level'
+
+  # ============================================================
+  # Grafana logs (file — Grafana writes to /var/log/grafana/)
+  # ============================================================
+  - job_name: grafana
+    static_configs:
+      - targets:
+          - localhost
+        labels:
+          job: grafana
+          server: monitoring-server
+          environment: production
+          __path__: /var/log/grafana/*.log
+
+  # ============================================================
+  # Loki service logs (systemd journal)
+  # ============================================================
+  - job_name: loki
+    journal:
+      max_age: 12h
+      labels:
+        job: loki
+        server: monitoring-server
+        environment: production
+      matches: _SYSTEMD_UNIT=loki.service
+    relabel_configs:
+      - source_labels: ['__journal_priority_keyword']
+        target_label: 'level'
+
+  # ============================================================
+  # AlertManager service logs (systemd journal)
+  # ============================================================
+  - job_name: alertmanager
+    journal:
+      max_age: 12h
+      labels:
+        job: alertmanager
+        server: monitoring-server
+        environment: production
+      matches: _SYSTEMD_UNIT=alertmanager.service
+    relabel_configs:
+      - source_labels: ['__journal_priority_keyword']
+        target_label: 'level'
+
+  # ============================================================
+  # Node Exporter service logs (systemd journal)
+  # ============================================================
+  - job_name: node-exporter
+    journal:
+      max_age: 12h
+      labels:
+        job: node-exporter
+        server: monitoring-server
+        environment: production
+      matches: _SYSTEMD_UNIT=node_exporter.service
+    relabel_configs:
+      - source_labels: ['__journal_priority_keyword']
+        target_label: 'level'
+
+  # ============================================================
+  # System syslog
+  # ============================================================
+  - job_name: monitoring-syslog
+    static_configs:
+      - targets:
+          - localhost
+        labels:
+          job: syslog-monitoring
+          server: monitoring-server
+          environment: production
+          __path__: /var/log/syslog

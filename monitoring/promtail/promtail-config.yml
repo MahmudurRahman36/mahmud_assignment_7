@@ -1,0 +1,109 @@
+server:
+  http_listen_port: 9080
+  grpc_listen_port: 0
+  log_level: info
+
+positions:
+  filename: /tmp/positions.yaml
+
+clients:
+  - url: http://MONITORING_SERVER_IP:3100/loki/api/v1/push
+    # Optional: Add basic auth if Loki is secured
+    # basic_auth:
+    #   username: promtail
+    #   password: your-password
+
+scrape_configs:
+  # Backend application logs (systemd service logs)
+  - job_name: bmi-backend
+    static_configs:
+      - targets:
+          - localhost
+        labels:
+          job: bmi-backend
+          server: app-server
+          environment: production
+          application: bmi-health-tracker
+          __path__: /var/log/bmi-backend.log
+
+  # Nginx access logs
+  - job_name: nginx-access
+    static_configs:
+      - targets:
+          - localhost
+        labels:
+          job: nginx-access
+          log_type: access
+          server: app-server
+          environment: production
+          __path__: /var/log/nginx/*access.log
+    pipeline_stages:
+      - regex:
+          expression: '^(?P<remote_addr>[\w\.]+) - (?P<remote_user>[^ ]*) \[(?P<time_local>.*)\] "(?P<method>[^ ]*) (?P<request>[^ ]*) (?P<protocol>[^ ]*)" (?P<status>[\d]+) (?P<body_bytes_sent>[\d]+) "(?P<http_referer>[^"]*)" "(?P<http_user_agent>[^"]*)"'
+      - labels:
+          method:
+          status:
+
+  # Nginx error logs
+  - job_name: nginx-error
+    static_configs:
+      - targets:
+          - localhost
+        labels:
+          job: nginx-error
+          log_type: error
+          server: app-server
+          environment: production
+          __path__: /var/log/nginx/*error.log
+    pipeline_stages:
+      - regex:
+          expression: '(?P<timestamp>\d{4}/\d{2}/\d{2} \d{2}:\d{2}:\d{2}) \[(?P<level>\w+)\] (?P<message>.*)'
+      - labels:
+          level:
+
+  # System logs
+  - job_name: syslog
+    static_configs:
+      - targets:
+          - localhost
+        labels:
+          job: syslog
+          server: app-server
+          environment: production
+          __path__: /var/log/syslog
+    pipeline_stages:
+      - regex:
+          expression: '^(?P<timestamp>\w+ \d+ \d+:\d+:\d+) (?P<hostname>\S+) (?P<process>\w+)\[?(?P<pid>\d+)?\]?: (?P<message>.*)'
+      - labels:
+          process:
+
+  # PostgreSQL logs
+  - job_name: postgresql
+    static_configs:
+      - targets:
+          - localhost
+        labels:
+          job: postgresql
+          server: app-server
+          environment: production
+          __path__: /var/log/postgresql/*.log
+    pipeline_stages:
+      - multiline:
+          firstline: '^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}'
+      - regex:
+          expression: '(?P<timestamp>\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d+) \w+ \[(?P<pid>\d+)\] (?P<level>\w+):\s+(?P<message>.*)'
+      - labels:
+          level:
+
+  # Auth logs (failed login attempts)
+  - job_name: auth
+    static_configs:
+      - targets:
+          - localhost
+        labels:
+          job: auth
+          server: app-server
+          environment: production
+          __path__: /var/log/auth.log
+
+# Note: Replace MONITORING_SERVER_IP with your monitoring server's IP address

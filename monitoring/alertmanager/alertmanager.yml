@@ -1,0 +1,172 @@
+global:
+  resolve_timeout: 5m
+  # SMTP configuration for email notifications (cPanel Secure mail settings)
+  smtp_smarthost: 'mail.naasbd.com:587' # Port 587 is standard for secure STARTTLS
+  smtp_from: 'mahmud@naasbd.com'
+  smtp_auth_username: 'mahmud@naasbd.com'
+  smtp_auth_password: 'your-email-password'
+  smtp_require_tls: true
+
+# Templates for notifications
+templates:
+  - '/etc/alertmanager/templates/*.tmpl'
+
+# Main routing configuration
+route:
+  receiver: 'default-receiver'
+  group_by: ['alertname', 'cluster', 'service', 'severity']
+  group_wait: 10s
+  group_interval: 10s
+  repeat_interval: 12h
+  
+  routes:
+    # Critical alerts - send immediately
+    - receiver: 'critical-alerts'
+      match:
+        severity: critical
+      group_wait: 5s
+      repeat_interval: 4h
+      continue: true
+    
+    # Warning alerts - can be grouped
+    - receiver: 'warning-alerts'
+      match:
+        severity: warning
+      group_wait: 30s
+      repeat_interval: 12h
+    
+    # Database alerts - special handling
+    - receiver: 'database-team'
+      match:
+        category: database
+      continue: true
+    
+    # Infrastructure alerts
+    - receiver: 'infrastructure-team'
+      match:
+        category: infrastructure
+      continue: true
+
+# Receivers (notification channels)
+receivers:
+  # Default receiver (catches all if no other match)
+  - name: 'default-receiver'
+    email_configs:
+      - to: 'oncall@yourcompany.com'
+        send_resolved: true
+    
+  # Critical alerts receiver
+  - name: 'critical-alerts'
+    email_configs:
+      - to: 'oncall@yourcompany.com'
+        send_resolved: true
+        headers:
+          Subject: '[CRITICAL] {{ .GroupLabels.alertname }} - {{ .GroupLabels.cluster }}'
+        html: |
+          <h2>Critical Alert Fired</h2>
+          <p><strong>Alert:</strong> {{ .GroupLabels.alertname }}</p>
+          <p><strong>Severity:</strong> {{ .CommonLabels.severity }}</p>
+          <p><strong>Instance:</strong> {{ .CommonLabels.instance }}</p>
+          {{ range .Alerts }}
+          <p><strong>Description:</strong> {{ .Annotations.description }}</p>
+          <p><strong>Runbook:</strong> {{ .Annotations.runbook }}</p>
+          {{ end }}
+    
+    # Slack notifications (uncomment and configure)
+    # slack_configs:
+    #   - api_url: 'https://hooks.slack.com/services/YOUR/WEBHOOK/URL'
+    #     channel: '#critical-alerts'
+    #     title: '🚨 CRITICAL: {{ .GroupLabels.alertname }}'
+    #     text: |
+    #       {{ range .Alerts }}
+    #       *Alert:* {{ .Labels.alertname }}
+    #       *Severity:* {{ .Labels.severity }}
+    #       *Instance:* {{ .Labels.instance }}
+    #       *Description:* {{ .Annotations.description }}
+    #       *Runbook:* {{ .Annotations.runbook }}
+    #       {{ end }}
+    #     send_resolved: true
+    
+    # PagerDuty (uncomment and configure)
+    # pagerduty_configs:
+    #   - service_key: 'YOUR-PAGERDUTY-SERVICE-KEY'
+    #     description: '{{ .GroupLabels.alertname }}: {{ .CommonAnnotations.description }}'
+    
+    # Discord webhook (uncomment and configure)
+    # discord_configs:
+    #   - webhook_url: 'https://discord.com/api/webhooks/YOUR/WEBHOOK/URL'
+    #     title: '🚨 Critical Alert'
+    #     message: |
+    #       {{ range .Alerts }}
+    #       **Alert:** {{ .Labels.alertname }}
+    #       **Severity:** {{ .Labels.severity }}
+    #       **Instance:** {{ .Labels.instance }}
+    #       **Description:** {{ .Annotations.description }}
+    #       {{ end }}
+
+  # Warning alerts receiver
+  - name: 'warning-alerts'
+    email_configs:
+      - to: 'devops@yourcompany.com'
+        send_resolved: true
+        headers:
+          Subject: '[WARNING] {{ .GroupLabels.alertname }}'
+    
+    # Slack notifications (uncomment and configure)
+    # slack_configs:
+    #   - api_url: 'https://hooks.slack.com/services/YOUR/WEBHOOK/URL'
+    #     channel: '#warnings'
+    #     title: '⚠️ WARNING: {{ .GroupLabels.alertname }}'
+    #     text: '{{ range .Alerts }}{{ .Annotations.description }}{{ end }}'
+    #     send_resolved: true
+
+  # Database team receiver
+  - name: 'database-team'
+    email_configs:
+      - to: 'dba@yourcompany.com'
+        send_resolved: true
+
+  # Infrastructure team receiver
+  - name: 'infrastructure-team'
+    email_configs:
+      - to: 'infrastructure@yourcompany.com'
+        send_resolved: true
+
+# Inhibition rules (suppress certain alerts when others are active)
+inhibit_rules:
+  # If instance is down, don't alert on other metrics from that instance
+  - source_match:
+      alertname: 'InstanceDown'
+    target_match_re:
+      instance: '.*'
+    equal: ['instance']
+  
+  # If there's a critical alert, suppress warnings for the same alert
+  - source_match:
+      severity: 'critical'
+    target_match:
+      severity: 'warning'
+    equal: ['alertname', 'instance']
+  
+  # If database is down, don't alert on high connections
+  - source_match:
+      alertname: 'PostgreSQLDown'
+    target_match:
+      alertname: 'TooManyDatabaseConnections'
+    equal: ['instance']
+  
+  # If backend is down, don't alert on API errors
+  - source_match:
+      alertname: 'BackendDown'
+    target_match:
+      alertname: 'HighAPIErrorRate'
+    equal: ['instance']
+
+# Mute specific alerts during maintenance windows
+# mute_time_intervals:
+#   - name: maintenance-window
+#     time_intervals:
+#       - times:
+#         - start_time: '02:00'
+#           end_time: '04:00'
+#         weekdays: ['saturday', 'sunday']
