@@ -72,36 +72,58 @@ jobs:
           cd $APP_DIR/src/backend
           npm install --production 2>&1 | tail -5
 
-          # ── STEP 4: Write .env (printf - no nested heredoc) ───────────────
-          echo "==> Writing .env..."
-          printf '%s\n' \
-            'NODE_ENV=production' \
-            'PORT=3000' \
-            'DATABASE_URL=postgresql://${{ env.DB_USER }}:${{ secrets.DB_PASSWORD }}@${{ secrets.DB_PRIVATE_IP }}:5432/${{ env.DB_NAME }}' \
-            'FRONTEND_URL=http://${{ secrets.ALB_DNS_NAME }}' \
-            > $APP_DIR/src/backend/.env
-          chmod 600 $APP_DIR/src/backend/.env
-          echo "==> .env written. DB=${{ secrets.DB_PRIVATE_IP }}"
+          # ── STEP 4: Write .env — smart credential resolution ──────────────
+          # The old backend ran from /backend/ (no src/). Its .env had the
+          # CORRECT PostgreSQL password. The DB_PASSWORD GitHub secret may
+          # not match the actual DB password set during manual provisioning.
+          # Strategy: reuse DATABASE_URL from old working .env; fall back to
+          # GitHub secrets only if the old .env is absent.
+          echo "==> Resolving database credentials..."
+          OLD_ENV=/home/ubuntu/bmi-health-tracker/backend/.env
+          NEW_ENV=$APP_DIR/src/backend/.env
 
-          # ── STEP 5: Create measurements table via Node.js ─────────────────
-          # Write migration to a temp file (avoids nested heredoc issues)
-          echo "==> Running Node.js migration..."
+          # Always write the non-secret parts fresh
+          printf 'NODE_ENV=production\n'  > $NEW_ENV
+          printf 'PORT=3000\n'           >> $NEW_ENV
+          printf 'FRONTEND_URL=http://${{ secrets.ALB_DNS_NAME }}\n' >> $NEW_ENV
+
+          # Prefer the existing (working) DATABASE_URL from old .env
+          if [ -f "$OLD_ENV" ] && grep -q "DATABASE_URL" "$OLD_ENV"; then
+            echo "==> Reusing DATABASE_URL from existing $OLD_ENV"
+            grep "^DATABASE_URL" "$OLD_ENV" >> $NEW_ENV
+          else
+            echo "==> Writing DATABASE_URL from GitHub secrets (fallback)"
+            printf 'DATABASE_URL=postgresql://${{ env.DB_USER }}:${{ secrets.DB_PASSWORD }}@${{ secrets.DB_PRIVATE_IP }}:5432/${{ env.DB_NAME }}\n' >> $NEW_ENV
+          fi
+          chmod 600 $NEW_ENV
+
+          # Show masked URL for diagnostics
+          DB_URL=$(grep "^DATABASE_URL" $NEW_ENV | head -1)
+          echo "==> DB_URL: $(echo $DB_URL | sed 's|:.*@|:****@|')"
+
+          # ── STEP 5: Test DB connection + create measurements table ────────
+          echo "==> Testing DB connection and running migration..."
           node -e "
             const { Pool } = require('pg');
-            require('dotenv').config({ path: '$APP_DIR/src/backend/.env' });
-            const pool = new Pool({ connectionString: process.env.DATABASE_URL, connectionTimeoutMillis: 10000 });
-            pool.connect(function(err, client, done) {
-              if (err) { console.log('WARN connect:', err.message); process.exit(0); }
-              client.query('CREATE TABLE IF NOT EXISTS measurements (id SERIAL PRIMARY KEY, weight_kg NUMERIC(5,2) NOT NULL, height_cm NUMERIC(5,2) NOT NULL, age INTEGER NOT NULL, sex VARCHAR(10) NOT NULL, activity_level VARCHAR(30), bmi NUMERIC(4,1) NOT NULL, bmi_category VARCHAR(30), bmr INTEGER, daily_calories INTEGER, measurement_date DATE NOT NULL DEFAULT CURRENT_DATE, created_at TIMESTAMPTZ NOT NULL DEFAULT now())', function(qerr) {
+            require('dotenv').config({ path: '$NEW_ENV' });
+            if (!process.env.DATABASE_URL) { console.log('ERROR: DATABASE_URL not set'); process.exit(0); }
+            const pool = new Pool({ connectionString: process.env.DATABASE_URL, connectionTimeoutMillis: 8000 });
+            pool.connect(function(connErr, client, done) {
+              if (connErr) {
+                console.log('DB-CONNECT-ERROR: ' + connErr.message);
+                console.log('HINT: Update DB_PASSWORD secret or fix old .env password');
+                pool.end(); process.exit(0);
+              }
+              console.log('DB-CONNECT-OK');
+              client.query('CREATE TABLE IF NOT EXISTS measurements (id SERIAL PRIMARY KEY, weight_kg NUMERIC(5,2) NOT NULL, height_cm NUMERIC(5,2) NOT NULL, age INTEGER NOT NULL, sex VARCHAR(10) NOT NULL, activity_level VARCHAR(30), bmi NUMERIC(4,1) NOT NULL, bmi_category VARCHAR(30), bmr INTEGER, daily_calories INTEGER, measurement_date DATE NOT NULL DEFAULT CURRENT_DATE, created_at TIMESTAMPTZ NOT NULL DEFAULT now())', function(qErr) {
                 done();
-                if (qerr) { console.log('WARN query:', qerr.message); } else { console.log('SUCCESS: measurements table ready'); }
-                pool.end();
-                process.exit(0);
+                if (qErr) { console.log('TABLE-WARN: ' + qErr.message); } else { console.log('TABLE-OK: measurements ready'); }
+                pool.end(); process.exit(0);
               });
             });
-          " || echo "==> Migration warning (table auto-created by db.js initDatabase on startup)"
+          " || true
 
-          # ── STEP 6: Kill PM2 daemon completely and start fresh ────────────
+          # ── STEP 6: Kill PM2 daemon completely and restart fresh ───────────
           echo "==> Force-restarting PM2..."
           pm2 kill 2>/dev/null || true
           sleep 2

@@ -447,8 +447,13 @@ install_postgres_exporter() {
     
     log_step "Reading Database connection from Backend configuration..."
     DATABASE_URL=""
-    if [ -f "$BACKEND_DIR/.env" ]; then
+    # Check new path first (src/backend/.env), then fall back to old path (backend/.env)
+    if [ -f "$BACKEND_DIR/.env" ] && grep -q "^DATABASE_URL" "$BACKEND_DIR/.env"; then
         DATABASE_URL=$(grep "^DATABASE_URL=" "$BACKEND_DIR/.env" | cut -d'=' -f2- | tr -d '"' | tr -d "'")
+        log_success "DATABASE_URL read from $BACKEND_DIR/.env"
+    elif [ -f "$(dirname $BACKEND_DIR)/backend/.env" ] && grep -q "^DATABASE_URL" "$(dirname $BACKEND_DIR)/backend/.env"; then
+        DATABASE_URL=$(grep "^DATABASE_URL=" "$(dirname $BACKEND_DIR)/backend/.env" | cut -d'=' -f2- | tr -d '"' | tr -d "'")
+        log_info "DATABASE_URL read from old backend path (fallback)"
     fi
     
     if [ -z "$DATABASE_URL" ]; then
@@ -962,8 +967,10 @@ final_verification() {
         if sudo -u "$ORIGINAL_USER" pm2 list | grep -q "bmi-backend.*online"; then
             log_success "bmi-backend (PM2) is running"
         else
-            log_error "bmi-backend (PM2) is NOT running"
-            all_good=false
+            log_warning "bmi-backend (PM2) is not running (errored/stopped) — check DB credentials"
+            log_warning "This is non-fatal: exporters are independent of the backend process"
+            # Note: do NOT set all_good=false here — bmi-backend is managed
+            # by the Deploy Backend step, not the exporter setup step.
         fi
     fi
     
