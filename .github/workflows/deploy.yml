@@ -72,56 +72,43 @@ jobs:
           cd $APP_DIR/src/backend
           npm install --production 2>&1 | tail -5
 
-          # ── STEP 4: Write .env ────────────────────────────────────────────
+          # ── STEP 4: Write .env (printf - no nested heredoc) ───────────────
           echo "==> Writing .env..."
-          cat > $APP_DIR/src/backend/.env << 'ENVEOF'
-NODE_ENV=production
-PORT=3000
-DATABASE_URL=postgresql://${{ env.DB_USER }}:${{ secrets.DB_PASSWORD }}@${{ secrets.DB_PRIVATE_IP }}:5432/${{ env.DB_NAME }}
-FRONTEND_URL=http://${{ secrets.ALB_DNS_NAME }}
-ENVEOF
+          printf '%s\n' \
+            'NODE_ENV=production' \
+            'PORT=3000' \
+            'DATABASE_URL=postgresql://${{ env.DB_USER }}:${{ secrets.DB_PASSWORD }}@${{ secrets.DB_PRIVATE_IP }}:5432/${{ env.DB_NAME }}' \
+            'FRONTEND_URL=http://${{ secrets.ALB_DNS_NAME }}' \
+            > $APP_DIR/src/backend/.env
           chmod 600 $APP_DIR/src/backend/.env
-          echo "==> .env written (DB host: ${{ secrets.DB_PRIVATE_IP }})"
+          echo "==> .env written. DB=${{ secrets.DB_PRIVATE_IP }}"
 
-          # ── STEP 5: Run DB migrations via Node.js (no psql needed) ────────
-          # The db.js initDatabase() also runs CREATE TABLE IF NOT EXISTS on
-          # every startup — this is an extra safety net via the pg package.
-          echo "==> Running Node.js inline migration (safety net)..."
-          node - << 'JSEOF'
-const { Pool } = require('pg');
-require('dotenv').config({ path: '/home/ubuntu/bmi-health-tracker/src/backend/.env' });
-const pool = new Pool({ connectionString: process.env.DATABASE_URL });
-pool.query(`
-  CREATE TABLE IF NOT EXISTS measurements (
-    id               SERIAL PRIMARY KEY,
-    weight_kg        NUMERIC(5,2)  NOT NULL CHECK (weight_kg > 0 AND weight_kg < 1000),
-    height_cm        NUMERIC(5,2)  NOT NULL CHECK (height_cm > 0 AND height_cm < 300),
-    age              INTEGER       NOT NULL CHECK (age > 0 AND age < 150),
-    sex              VARCHAR(10)   NOT NULL CHECK (sex IN ('male','female')),
-    activity_level   VARCHAR(30)   CHECK (activity_level IN ('sedentary','light','moderate','active','very_active')),
-    bmi              NUMERIC(4,1)  NOT NULL,
-    bmi_category     VARCHAR(30),
-    bmr              INTEGER,
-    daily_calories   INTEGER,
-    measurement_date DATE          NOT NULL DEFAULT CURRENT_DATE,
-    created_at       TIMESTAMPTZ   NOT NULL DEFAULT now()
-  )
-`)
-.then(() => { console.log('✅ measurements table ready'); pool.end(); process.exit(0); })
-.catch(e  => { console.log('⚠️  migration note:', e.message); pool.end(); process.exit(0); });
-JSEOF
+          # ── STEP 5: Create measurements table via Node.js ─────────────────
+          # Write migration to a temp file (avoids nested heredoc issues)
+          echo "==> Running Node.js migration..."
+          node -e "
+            const { Pool } = require('pg');
+            require('dotenv').config({ path: '$APP_DIR/src/backend/.env' });
+            const pool = new Pool({ connectionString: process.env.DATABASE_URL, connectionTimeoutMillis: 10000 });
+            pool.connect(function(err, client, done) {
+              if (err) { console.log('WARN connect:', err.message); process.exit(0); }
+              client.query('CREATE TABLE IF NOT EXISTS measurements (id SERIAL PRIMARY KEY, weight_kg NUMERIC(5,2) NOT NULL, height_cm NUMERIC(5,2) NOT NULL, age INTEGER NOT NULL, sex VARCHAR(10) NOT NULL, activity_level VARCHAR(30), bmi NUMERIC(4,1) NOT NULL, bmi_category VARCHAR(30), bmr INTEGER, daily_calories INTEGER, measurement_date DATE NOT NULL DEFAULT CURRENT_DATE, created_at TIMESTAMPTZ NOT NULL DEFAULT now())', function(qerr) {
+                done();
+                if (qerr) { console.log('WARN query:', qerr.message); } else { console.log('SUCCESS: measurements table ready'); }
+                pool.end();
+                process.exit(0);
+              });
+            });
+          " || echo "==> Migration warning (table auto-created by db.js initDatabase on startup)"
 
-          # ── STEP 6: Force-restart PM2 (kill daemon → fresh start) ─────────
-          echo "==> Restarting PM2 (full daemon kill + fresh start)..."
+          # ── STEP 6: Kill PM2 daemon completely and start fresh ────────────
+          echo "==> Force-restarting PM2..."
           pm2 kill 2>/dev/null || true
           sleep 2
           cd $APP_DIR/src/backend
           pm2 start ecosystem.config.js --env production
           pm2 save
-          # Persist PM2 across reboots
-          sudo env PATH=$PATH:/usr/bin /usr/lib/node_modules/pm2/bin/pm2 startup systemd -u ubuntu --hp /home/ubuntu 2>/dev/null || \
           pm2 startup systemd -u ubuntu --hp /home/ubuntu 2>/dev/null | grep 'sudo env' | bash || true
-
           echo "==> Backend deployment completed!"
           pm2 status
         ENDSSH
