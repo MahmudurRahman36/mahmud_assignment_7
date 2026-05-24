@@ -99,12 +99,12 @@ jobs:
           
           # Process Control via PM2
           echo "Restarting application with PM2..."
+          export PM2_HOME=/home/ubuntu/.pm2
           if pm2 describe bmi-backend > /dev/null 2>&1; then
-            pm2 restart bmi-backend --update-env
-          else
-            pm2 start src/server.js --name bmi-backend
-            pm2 save
+            pm2 delete bmi-backend
           fi
+          pm2 start ecosystem.config.js --env production
+          pm2 save
           
           echo "Backend deployment completed!"
         ENDSSH
@@ -226,14 +226,24 @@ jobs:
         echo "=========================================="
         echo "Performing App Verification via ALB"
         echo "=========================================="
-        sleep 5
+        echo "Waiting for ALB DNS propagation and target registration (up to 3 minutes)..."
         
-        HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" --max-time 15 "http://${{ secrets.ALB_DNS_NAME }}/health" || echo "000")
-        echo "ALB Health Endpoint Status: $HTTP_STATUS"
-        if [ "$HTTP_STATUS" = "200" ]; then
+        SUCCESS=false
+        HTTP_STATUS="000"
+        for i in {1..20}; do
+          HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" --max-time 10 "http://${{ secrets.ALB_DNS_NAME }}/health" || echo "000")
+          echo "Attempt $i: ALB Health Endpoint Status: $HTTP_STATUS"
+          if [ "$HTTP_STATUS" = "200" ]; then
+            SUCCESS=true
+            break
+          fi
+          sleep 10
+        done
+        
+        if [ "$SUCCESS" = "true" ]; then
           echo "SUCCESS: 3-Tier Application is online and routing properly!"
         else
-          echo "FAILURE: Application returned status $HTTP_STATUS. Please verify target groups and security groups."
+          echo "FAILURE: Application returned status $HTTP_STATUS after 20 attempts. Please verify target groups and security groups."
           exit 1
         fi
 
