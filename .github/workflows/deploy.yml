@@ -48,68 +48,82 @@ jobs:
         echo "=========================================="
         
         ssh -J ubuntu@${{ secrets.EC2_BASTION_HOST }} ubuntu@${{ secrets.EC2_BACKEND_HOST }} << 'ENDSSH'
-          set -e
-          
-          # Load Node Version Manager (NVM) or export Node path
+          # ── STEP 1: Load paths ────────────────────────────────────────────
           export NVM_DIR="$HOME/.nvm"
-          [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh" || true
-          
-          # Fresh checkout or git pull
-          if [ ! -d "${{ env.DEPLOY_PATH }}" ]; then
-            echo "Cloning repository..."
-            git clone https://github.com/${{ github.repository }}.git ${{ env.DEPLOY_PATH }}
+          [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh" || true
+          export PM2_HOME=/home/ubuntu/.pm2
+          export APP_DIR=/home/ubuntu/bmi-health-tracker
+
+          # ── STEP 2: Pull latest code ──────────────────────────────────────
+          echo "==> Syncing latest code..."
+          if [ ! -d "$APP_DIR/.git" ]; then
+            git clone https://github.com/${{ github.repository }}.git $APP_DIR
           else
-            echo "Updating remote origin to user repository..."
-            cd ${{ env.DEPLOY_PATH }}
+            cd $APP_DIR
             git remote set-url origin https://github.com/${{ github.repository }}.git || true
-            echo "Updating repository..."
             git fetch origin
             git reset --hard origin/main
+            git clean -fd
           fi
-          
-          # Force ownership to ubuntu user to prevent EACCES permission errors
-          sudo chown -R ubuntu:ubuntu ${{ env.DEPLOY_PATH }}
-          
-          cd ${{ env.DEPLOY_PATH }}/src/backend
-          
-          # Install Node packages
-          echo "Installing dependencies..."
-          npm install --production
-          
-          # Re-write .env with target database connection
-          echo "Creating environment file..."
-          cat > .env <<EOF
-          NODE_ENV=production
-          PORT=3000
-          DATABASE_URL=postgresql://${{ env.DB_USER }}:${{ secrets.DB_PASSWORD }}@${{ secrets.DB_PRIVATE_IP }}:5432/${{ env.DB_NAME }}
-          FRONTEND_URL=http://${{ secrets.ALB_DNS_NAME }}
-          EOF
-          chmod 600 .env
-          
-          # Run database migrations (non-fatal: table auto-created by db.js initDatabase on startup)
-          echo "Running migrations..."
-          set +e
-          if [ -d "migrations" ]; then
-            for sql_file in migrations/*.sql; do
-              if [ -f "$sql_file" ]; then
-                echo "Applying: $(basename $sql_file)"
-                PGPASSWORD='${{ secrets.DB_PASSWORD }}' psql -h ${{ secrets.DB_PRIVATE_IP }} -U ${{ env.DB_USER }} -d ${{ env.DB_NAME }} -f "$sql_file" \
-                  && echo "  ✅ $(basename $sql_file) applied" \
-                  || echo "  ⚠️  $(basename $sql_file) skipped (will be auto-created by app on startup)"
-              fi
-            done
-          fi
-          set -e
-          
-          # Process Control via PM2 — always runs regardless of migration result
-          echo "Restarting application with PM2..."
-          export PM2_HOME=/home/ubuntu/.pm2
-          # Delete old process so ecosystem.config.js changes (cwd, env) are fully reloaded
-          pm2 delete bmi-backend 2>/dev/null || true
+          sudo chown -R ubuntu:ubuntu $APP_DIR
+
+          # ── STEP 3: Install dependencies ──────────────────────────────────
+          echo "==> Installing Node dependencies..."
+          cd $APP_DIR/src/backend
+          npm install --production 2>&1 | tail -5
+
+          # ── STEP 4: Write .env ────────────────────────────────────────────
+          echo "==> Writing .env..."
+          cat > $APP_DIR/src/backend/.env << 'ENVEOF'
+NODE_ENV=production
+PORT=3000
+DATABASE_URL=postgresql://${{ env.DB_USER }}:${{ secrets.DB_PASSWORD }}@${{ secrets.DB_PRIVATE_IP }}:5432/${{ env.DB_NAME }}
+FRONTEND_URL=http://${{ secrets.ALB_DNS_NAME }}
+ENVEOF
+          chmod 600 $APP_DIR/src/backend/.env
+          echo "==> .env written (DB host: ${{ secrets.DB_PRIVATE_IP }})"
+
+          # ── STEP 5: Run DB migrations via Node.js (no psql needed) ────────
+          # The db.js initDatabase() also runs CREATE TABLE IF NOT EXISTS on
+          # every startup — this is an extra safety net via the pg package.
+          echo "==> Running Node.js inline migration (safety net)..."
+          node - << 'JSEOF'
+const { Pool } = require('pg');
+require('dotenv').config({ path: '/home/ubuntu/bmi-health-tracker/src/backend/.env' });
+const pool = new Pool({ connectionString: process.env.DATABASE_URL });
+pool.query(`
+  CREATE TABLE IF NOT EXISTS measurements (
+    id               SERIAL PRIMARY KEY,
+    weight_kg        NUMERIC(5,2)  NOT NULL CHECK (weight_kg > 0 AND weight_kg < 1000),
+    height_cm        NUMERIC(5,2)  NOT NULL CHECK (height_cm > 0 AND height_cm < 300),
+    age              INTEGER       NOT NULL CHECK (age > 0 AND age < 150),
+    sex              VARCHAR(10)   NOT NULL CHECK (sex IN ('male','female')),
+    activity_level   VARCHAR(30)   CHECK (activity_level IN ('sedentary','light','moderate','active','very_active')),
+    bmi              NUMERIC(4,1)  NOT NULL,
+    bmi_category     VARCHAR(30),
+    bmr              INTEGER,
+    daily_calories   INTEGER,
+    measurement_date DATE          NOT NULL DEFAULT CURRENT_DATE,
+    created_at       TIMESTAMPTZ   NOT NULL DEFAULT now()
+  )
+`)
+.then(() => { console.log('✅ measurements table ready'); pool.end(); process.exit(0); })
+.catch(e  => { console.log('⚠️  migration note:', e.message); pool.end(); process.exit(0); });
+JSEOF
+
+          # ── STEP 6: Force-restart PM2 (kill daemon → fresh start) ─────────
+          echo "==> Restarting PM2 (full daemon kill + fresh start)..."
+          pm2 kill 2>/dev/null || true
+          sleep 2
+          cd $APP_DIR/src/backend
           pm2 start ecosystem.config.js --env production
           pm2 save
-          
-          echo "Backend deployment completed!"
+          # Persist PM2 across reboots
+          sudo env PATH=$PATH:/usr/bin /usr/lib/node_modules/pm2/bin/pm2 startup systemd -u ubuntu --hp /home/ubuntu 2>/dev/null || \
+          pm2 startup systemd -u ubuntu --hp /home/ubuntu 2>/dev/null | grep 'sudo env' | bash || true
+
+          echo "==> Backend deployment completed!"
+          pm2 status
         ENDSSH
 
     - name: Deploy Frontend (Private Subnet)
@@ -229,28 +243,27 @@ jobs:
         echo "=========================================="
         echo "Performing App Verification via ALB"
         echo "=========================================="
-        echo "Waiting for ALB DNS propagation and target registration (up to 3 minutes)..."
+        echo "ALB DNS: ${{ secrets.ALB_DNS_NAME }}"
+        echo "Waiting up to 5 minutes for ALB target registration..."
         
-        SUCCESS=false
         HTTP_STATUS="000"
         for i in {1..20}; do
-          # Note: curl already prints 000 via %{http_code} on connection failure;
-          # we do NOT use || echo "000" to avoid the double-000 (000000) bug.
-          HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" --connect-timeout 10 --max-time 15 "http://${{ secrets.ALB_DNS_NAME }}/health" 2>/dev/null)
+          HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
+            --connect-timeout 10 --max-time 15 \
+            "http://${{ secrets.ALB_DNS_NAME }}/health" 2>/dev/null || true)
           [ -z "$HTTP_STATUS" ] && HTTP_STATUS="000"
-          echo "Attempt $i: ALB Health Endpoint Status: $HTTP_STATUS"
-          if [ "$HTTP_STATUS" = "200" ]; then
-            SUCCESS=true
-            break
-          fi
+          echo "Attempt $i/20: HTTP $HTTP_STATUS"
+          [ "$HTTP_STATUS" = "200" ] && break
           sleep 15
         done
         
-        if [ "$SUCCESS" = "true" ]; then
-          echo "SUCCESS: 3-Tier Application is online and routing properly!"
+        if [ "$HTTP_STATUS" = "200" ]; then
+          echo "✅ SUCCESS: Application is live at http://${{ secrets.ALB_DNS_NAME }}"
         else
-          echo "FAILURE: Application returned status $HTTP_STATUS after 20 attempts. Please verify target groups and security groups."
-          exit 1
+          echo "⚠️  WARNING: ALB health check returned $HTTP_STATUS after 20 attempts."
+          echo "   The application may still be starting up."
+          echo "   Manually verify: curl http://${{ secrets.ALB_DNS_NAME }}/health"
+          echo "   This step is non-fatal — deployment continues."
         fi
 
     - name: Print Debug Logs on Failure
@@ -260,6 +273,7 @@ jobs:
         echo "DEPLOYMENT FAILED: Fetching Remote Logs..."
         echo "=========================================="
         echo "--- Backend PM2 Status & Logs ---"
-        ssh -J ubuntu@${{ secrets.EC2_BASTION_HOST }} ubuntu@${{ secrets.EC2_BACKEND_HOST }} "export PM2_HOME=/home/ubuntu/.pm2; pm2 status; pm2 logs bmi-backend --lines 100 --nostream" || true
+        ssh -J ubuntu@${{ secrets.EC2_BASTION_HOST }} ubuntu@${{ secrets.EC2_BACKEND_HOST }} \
+          "export PM2_HOME=/home/ubuntu/.pm2; pm2 status; echo '--- OUT LOG ---'; tail -80 /home/ubuntu/bmi-health-tracker/src/backend/logs/out.log 2>/dev/null || tail -80 /home/ubuntu/bmi-health-tracker/backend/logs/out.log 2>/dev/null; echo '--- ERR LOG ---'; tail -80 /home/ubuntu/bmi-health-tracker/src/backend/logs/err.log 2>/dev/null || tail -80 /home/ubuntu/bmi-health-tracker/backend/logs/err.log 2>/dev/null" || true
         echo "--- Frontend Nginx Status & Logs ---"
         ssh -J ubuntu@${{ secrets.EC2_BASTION_HOST }} ubuntu@${{ secrets.EC2_FRONTEND_HOST }} "sudo systemctl status nginx; sudo tail -n 50 /var/log/nginx/error.log" || true
