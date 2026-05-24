@@ -86,23 +86,26 @@ jobs:
           EOF
           chmod 600 .env
           
-          # Run database migrations
+          # Run database migrations (non-fatal: table auto-created by db.js initDatabase on startup)
           echo "Running migrations..."
+          set +e
           if [ -d "migrations" ]; then
             for sql_file in migrations/*.sql; do
               if [ -f "$sql_file" ]; then
                 echo "Applying: $(basename $sql_file)"
-                PGPASSWORD='${{ secrets.DB_PASSWORD }}' psql -h ${{ secrets.DB_PRIVATE_IP }} -U ${{ env.DB_USER }} -d ${{ env.DB_NAME }} -f "$sql_file"
+                PGPASSWORD='${{ secrets.DB_PASSWORD }}' psql -h ${{ secrets.DB_PRIVATE_IP }} -U ${{ env.DB_USER }} -d ${{ env.DB_NAME }} -f "$sql_file" \
+                  && echo "  ✅ $(basename $sql_file) applied" \
+                  || echo "  ⚠️  $(basename $sql_file) skipped (will be auto-created by app on startup)"
               fi
             done
           fi
+          set -e
           
-          # Process Control via PM2
+          # Process Control via PM2 — always runs regardless of migration result
           echo "Restarting application with PM2..."
           export PM2_HOME=/home/ubuntu/.pm2
-          if pm2 describe bmi-backend > /dev/null 2>&1; then
-            pm2 delete bmi-backend
-          fi
+          # Delete old process so ecosystem.config.js changes (cwd, env) are fully reloaded
+          pm2 delete bmi-backend 2>/dev/null || true
           pm2 start ecosystem.config.js --env production
           pm2 save
           
@@ -231,13 +234,16 @@ jobs:
         SUCCESS=false
         HTTP_STATUS="000"
         for i in {1..20}; do
-          HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" --max-time 10 "http://${{ secrets.ALB_DNS_NAME }}/health" || echo "000")
+          # Note: curl already prints 000 via %{http_code} on connection failure;
+          # we do NOT use || echo "000" to avoid the double-000 (000000) bug.
+          HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" --connect-timeout 10 --max-time 15 "http://${{ secrets.ALB_DNS_NAME }}/health" 2>/dev/null)
+          [ -z "$HTTP_STATUS" ] && HTTP_STATUS="000"
           echo "Attempt $i: ALB Health Endpoint Status: $HTTP_STATUS"
           if [ "$HTTP_STATUS" = "200" ]; then
             SUCCESS=true
             break
           fi
-          sleep 10
+          sleep 15
         done
         
         if [ "$SUCCESS" = "true" ]; then

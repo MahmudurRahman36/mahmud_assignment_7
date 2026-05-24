@@ -3,6 +3,9 @@
 -- Description: Create measurements table
 -- Date: 2025-12-12
 
+-- Ensure public schema permissions (needed for PostgreSQL 15+)
+GRANT ALL ON SCHEMA public TO bmi_user;
+
 -- Create measurements table
 CREATE TABLE IF NOT EXISTS measurements (
   id SERIAL PRIMARY KEY,
